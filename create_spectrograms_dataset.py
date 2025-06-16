@@ -8,24 +8,14 @@ import librosa.display
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from concurrent.futures import ProcessPoolExecutor, as_completed
+
 
 from tqdm import tqdm
 
-all_speakers_dataframe = pd.read_csv(r"all_speakers.csv")
-
-def load_and_trim(path, sr, duration, top_db):
-    """Load audio, trim leading/trailing silence, pad or cut to `duration` seconds."""
+def load_and_trim(path, sr, top_db):
+    """Load audio and trim leading/trailing silence."""
     audio, _ = librosa.load(path, sr=sr)
-    # 1) remove silence
     audio, _ = librosa.effects.trim(audio, top_db=top_db)
-    # 2) pad or trim to fixed length
-    target_len = int(sr * duration)
-    if len(audio) < target_len:
-        pad = target_len - len(audio)
-        audio = np.pad(audio, (0, pad), mode='constant')
-    else:
-        audio = audio[:target_len]
     return audio
 
 
@@ -71,31 +61,60 @@ def save_spectrogram(spectrogram, output_path):
     plt.close(fig)
 
 
-def process_file(path: Path, settings):
-    """Run full pipeline for one audio file, plus optional augmentations."""
-    audio = load_and_trim(path, settings.sr, settings.duration, settings.top_db)
-    
-    # original
-    spectrogram = compute_spectrogram(audio, settings.sr, settings.n_fft,
-                               settings.hop_length, settings.n_mels
-                               )
-    if settings.normalize:
-        spectrogram = normalize(spectrogram)
+def process_file(row: pd.Series, settings):
+    """Create spectrograms for all possible segments of one audio file.
 
-    # save
-    # Original path
-    original_path = path
+    Parameters
+    ----------
+    row : pd.Series
+        Row from ``all_speakers.csv`` describing one audio file.
+    settings : argparse.Namespace
+        CLI arguments.
 
-    # Suppose you want to replace 'experiment1' with 'experiment2'
-    new_parts = [part if part != settings.input_dir.parts[0] else settings.output_dir.parts[0] for part in original_path.parts]
-    output_path = Path(*new_parts) 
+    Returns
+    -------
+    list[dict]
+        A list of dictionaries representing rows for the output CSV.
+    """
 
-    save_spectrogram(spectrogram, output_path)
+    relative_path = Path(row["filename"])
+    full_path = settings.input_dir / relative_path
+
+    audio = load_and_trim(full_path, settings.sr, settings.top_db)
+
+    segment_len = int(settings.duration * settings.sr)
+    max_start = len(audio) - segment_len
+    entries = []
+
+    for start in range(0, max_start + 1, segment_len):
+        end = start + segment_len
+        if end > len(audio):
+            break
+        segment = audio[start:end]
+        spectrogram = compute_spectrogram(
+            segment,
+            settings.sr,
+            settings.n_fft,
+            settings.hop_length,
+            settings.n_mels,
+        )
+        if settings.normalize:
+            spectrogram = normalize(spectrogram)
+
+        out_rel = relative_path.with_name(
+            f"{relative_path.stem}_{int(start / settings.sr)}_{int((start / settings.sr) + settings.duration)}{relative_path.suffix}"
+        )
+        out_full = settings.output_dir / out_rel
+
+        save_spectrogram(spectrogram, out_full)
+
+        row_copy = row.copy()
+        row_copy["filename"] = str(out_full.with_suffix(".png"))
+        entries.append(row_copy.to_dict())
+
+    return entries
 
 
-def wrapped_file_process(path, settings):
-    fullpath = settings.input_dir / path
-    process_file(fullpath, settings)
 
 
 def main():
@@ -124,16 +143,12 @@ def main():
         runpy.run_path("create_speakers_csv.py")
         dataframe_all = pd.read_csv("all_speakers.csv")
 
-    paths_distant = dataframe_all["filename"].tolist()
-    paths_source = dataframe_all["source"].unique().tolist()
+    records = []
+    for _, row in tqdm(dataframe_all.iterrows(), total=len(dataframe_all), desc="Processing files"):
+        records.extend(process_file(row, settings))
 
-    paths = paths_distant + paths_source
-
-    with ProcessPoolExecutor(max_workers=8) as executor:  # adjust num of threads
-        futures = [executor.submit(wrapped_file_process, path, settings) for path in paths]
-        
-        for _ in tqdm(as_completed(futures), total=len(futures), desc="Processing files"):
-            pass
+    output_df = pd.DataFrame(records)
+    output_df.to_csv("VOiCES_devkit_spectrograms.csv", index=False)
     
 
 
