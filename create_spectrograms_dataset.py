@@ -12,21 +12,21 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from tqdm import tqdm
 
-all_speakers_dataframe = pd.read_csv(r"all_speakers.csv")
-
-def load_and_trim(path, sr, duration, top_db):
+def get_audio_for_spectrogram_generation(path, sr, duration, top_db):
     """Load audio, trim leading/trailing silence, pad or cut to `duration` seconds."""
     audio, _ = librosa.load(path, sr=sr)
+
     # 1) remove silence
     audio, _ = librosa.effects.trim(audio, top_db=top_db)
-    # 2) pad or trim to fixed length
-    target_len = int(sr * duration)
-    if len(audio) < target_len:
-        pad = target_len - len(audio)
-        audio = np.pad(audio, (0, pad), mode='constant')
-    else:
-        audio = audio[:target_len]
-    return audio
+
+    # 2) trim to full slices of duration
+    trimmed_duration = librosa.get_duration(y=audio, sr=sr)
+    whole_slices_count = int(trimmed_duration/duration)
+    target_len = int(whole_slices_count * sr * duration)
+   
+    audio = audio[:target_len]
+
+    return audio, whole_slices_count
 
 
 def compute_spectrogram(audio, sr, n_fft, hop_length, n_mels):
@@ -47,9 +47,14 @@ def normalize(spectrogram):
     return (spectrogram - mean) / std
 
 
-def save_spectrogram(spectrogram, output_path):
+def save_spectrogram(spectrogram, output_path, start_second, end_second):
     """Save `spec` either as .npy or as a single‐channel grayscale PNG."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # append slice info to filename
+    if start_second is not None and end_second is not None:
+        suffix = f"_slice_{int(start_second)}_{int(end_second)}.png"
+        output_path = output_path.with_name(output_path.stem + suffix)
     
     # create a grayscale image
     fig, ax = plt.subplots(figsize=(4, 4), dpi=100)
@@ -64,7 +69,7 @@ def save_spectrogram(spectrogram, output_path):
 
     # save as PNG
     fig.savefig(
-        output_path.with_suffix('.png'),
+        output_path,
         bbox_inches='tight',
         pad_inches=0
     )
@@ -73,24 +78,40 @@ def save_spectrogram(spectrogram, output_path):
 
 def process_file(path: Path, settings):
     """Run full pipeline for one audio file, plus optional augmentations."""
-    audio = load_and_trim(path, settings.sr, settings.duration, settings.top_db)
+    duration = settings.duration
+    sampling_rate = settings.sr
+    top_db = settings.top_db
+    slice_length = duration*sampling_rate
+    n_fft = settings.n_fft
+    hop_length = settings.hop_length
+    n_mels = settings.n_mels
+
+    audio, slice_count = get_audio_for_spectrogram_generation(path, sampling_rate, duration, top_db)
     
     # original
-    spectrogram = compute_spectrogram(audio, settings.sr, settings.n_fft,
-                               settings.hop_length, settings.n_mels
-                               )
-    if settings.normalize:
-        spectrogram = normalize(spectrogram)
+    for index in range(0, slice_count):
+        start = int(index * slice_length)
+        end = int((index + 1) * slice_length)
+        audio_slice = audio[start:end]
+        spectrogram = compute_spectrogram(audio_slice, sampling_rate,n_fft,
+                                           hop_length, n_mels
+                                )
+        if settings.normalize:
+            spectrogram = normalize(spectrogram)
 
-    # save
-    # Original path
-    original_path = path
+        # save
+        # Original path
+        original_path = path
 
-    # Suppose you want to replace 'experiment1' with 'experiment2'
-    new_parts = [part if part != settings.input_dir.parts[0] else settings.output_dir.parts[0] for part in original_path.parts]
-    output_path = Path(*new_parts) 
+        # Replacing VOiCES_devkit with VOiCES_devkit_spectrograms
+        new_parts = [part if part != settings.input_dir.parts[0] else settings.output_dir.parts[0] for part in original_path.parts]
 
-    save_spectrogram(spectrogram, output_path)
+        output_path = Path(*new_parts)
+
+        start_second = index*duration
+        end_second = (index+1)*duration
+         
+        save_spectrogram(spectrogram, output_path, start_second, end_second)
 
 
 def wrapped_file_process(path, settings):
@@ -106,7 +127,7 @@ def main():
     parser.add_argument('--input-dir',   type=Path, default='VOiCES_devkit')
     parser.add_argument('--output-dir',  type=Path, default='VOiCES_devkit_spectrograms')
     parser.add_argument('--sr',          type=int,   default=16000)
-    parser.add_argument('--duration',    type=float, default=5.0,
+    parser.add_argument('--duration',    type=float, default=3.0,
                    help="fixed clip length in seconds")
     parser.add_argument('--top-db',      type=int,   default=20,
                    help="librosa trim top_db")
@@ -129,7 +150,7 @@ def main():
 
     paths = paths_distant + paths_source
 
-    with ProcessPoolExecutor(max_workers=8) as executor:  # adjust num of threads
+    with ProcessPoolExecutor(max_workers=30) as executor:  # adjust num of threads
         futures = [executor.submit(wrapped_file_process, path, settings) for path in paths]
         
         for _ in tqdm(as_completed(futures), total=len(futures), desc="Processing files"):
