@@ -200,3 +200,4 @@ VOiCES_devkit_spectrograms
 VOiCES_devkit_spectrograms/*
 # Datasets CSVs
 all_speakers.csv
+all_spectrogram_slices.csv
