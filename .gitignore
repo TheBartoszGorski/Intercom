@@ -198,6 +198,13 @@ VOiCES_devkit
 VOiCES_devkit/*
 VOiCES_devkit_spectrograms
 VOiCES_devkit_spectrograms/*
+
 # Datasets CSVs
 all_speakers.csv
 all_spectrogram_slices.csv
+
+# CNN models
+CNN1_model.pth
+CNN1_model_final.pth
+CNN2_model.pth
+CNN2_model_final.pth

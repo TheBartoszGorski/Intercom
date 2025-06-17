@@ -35,13 +35,6 @@ def create_all_spectrograms_classified(path, allowed_men_count, allowed_women_co
     # Add "allowed" column
     df['allowed'] = df['speaker'].apply(lambda x: 1 if x in allowed_speakers else 0)
 
-    def modify_path(path):
-        new_path = "VOiCES_devkit_spectrograms/" + path
-        return new_path.replace(".wav", ".png")
-    
-    df["filename"] = df["filename"].apply(modify_path)
-
-    df.to_csv("all_spectrograms_classified.csv", index=True)
     return df
 
 def create_balanced_spectrograms_classified(path, allowed_men_count, allowed_women_count):
@@ -70,14 +63,6 @@ def create_balanced_spectrograms_classified(path, allowed_men_count, allowed_wom
 
     df['allowed'] = df['speaker'].apply(lambda x: 1 if x in allowed_speakers else 0)
 
-    # Adjust spectrogram path
-    def modify_path(path):
-        new_path = "VOiCES_devkit_spectrograms/" + path
-        return new_path.replace(".wav", ".png")
-
-    df["filename"] = df["filename"].apply(modify_path)
-
-    df.to_csv("balanced_spectrograms_classified.csv", index=True)
     return df
 
 def create_noiseless_spectrograms_classified(path, allowed_men_count, allowed_women_count):
@@ -99,14 +84,6 @@ def create_noiseless_spectrograms_classified(path, allowed_men_count, allowed_wo
     # Label samples: 1 = allowed, 0 = not allowed
     df['allowed'] = df['speaker'].apply(lambda x: 1 if x in allowed_speakers else 0)
 
-    def modify_path(path):
-        new_path = "VOiCES_devkit_spectrograms/" + path
-        return new_path.replace(".wav", ".png")
-    
-    df["filename"] = df["filename"].apply(modify_path)
-
-    df.to_csv("noiseless_spectrograms_classified.csv", index=True)
-
     return df
 
 def create_balanced_noiseless_spectrograms_classified(path, allowed_men_count, allowed_women_count):
@@ -122,8 +99,8 @@ def create_balanced_noiseless_spectrograms_classified(path, allowed_men_count, a
 
     # Fix total to 30 speakers: 15 from each gender
     np.random.seed(42)
-    selected_females = np.random.choice(female_speakers, 16, replace=False)
-    selected_males = np.random.choice(male_speakers, 16, replace=False)
+    selected_females = np.random.choice(female_speakers, 10, replace=False)
+    selected_males = np.random.choice(male_speakers, 10, replace=False)
 
     selected_speakers = set(selected_females.tolist() + selected_males.tolist())
     df = df[df['speaker'].isin(selected_speakers)].copy()
@@ -135,17 +112,7 @@ def create_balanced_noiseless_spectrograms_classified(path, allowed_men_count, a
 
     df['allowed'] = df['speaker'].apply(lambda x: 1 if x in allowed_speakers else 0)
 
-    # Adjust spectrogram path
-    def modify_path(path):
-        new_path = "VOiCES_devkit_spectrograms/" + path
-        return new_path.replace(".wav", ".png")
-
-    df["filename"] = df["filename"].apply(modify_path)
-
-    df.to_csv("balanced_noiseless_spectrograms_classified.csv", index=True)
     return df
-
-
 
 def generate_dataframes(df):
     # Get unique transcripts
@@ -296,16 +263,16 @@ def main():
     parser = argparse.ArgumentParser(
         description="Preprocess Voices_devkit to spectrograms"
     )
-    parser.add_argument('--dataset-csv-dir',   type=Path, default='all_speakers.csv')
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument('--dataset-csv-dir',   type=Path, default='all_spectrogram_slices.csv')
+    parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--learning-rate", type=int, default=1e-4)
-    parser.add_argument("--allowed-men-count", type=int, default=4)
-    parser.add_argument("--allowed-women-count", type=int, default=4)
+    parser.add_argument("--allowed-men-count", type=int, default=5)
+    parser.add_argument("--allowed-women-count", type=int, default=5)
     parser.add_argument("--resume", action="store_true", help="Resume training from a saved model.")
     parser.add_argument("--patience_lim", type=int, default=8)
-    parser.add_argument("--csv-type", type=str, default='all')
-    parser.add_argument("--CNN-model", type=str, default='CNN2')
+    parser.add_argument("--csv-type", type=str, default='balanced')
+    parser.add_argument("--CNN-model", type=str, default='CNN1')
 
     settings = parser.parse_args()
     epochs = settings.epochs
