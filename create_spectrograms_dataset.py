@@ -129,10 +129,10 @@ def main():
     parser.add_argument('--sr',          type=int,   default=16000)
     parser.add_argument('--duration',    type=float, default=3.0,
                    help="fixed clip length in seconds")
-    parser.add_argument('--top-db',      type=int,   default=20,
+    parser.add_argument('--top-db',      type=int,   default=15,
                    help="librosa trim top_db")
-    parser.add_argument('--n_mels',      type=int,   default=64)
-    parser.add_argument('--n_fft',       type=int,   default=400)
+    parser.add_argument('--n_mels',      type=int,   default=128)
+    parser.add_argument('--n_fft',       type=int,   default=1024)
     parser.add_argument('--hop_length',  type=int,   default=160)
     parser.add_argument('--normalize',   action='store_true')
     settings = parser.parse_args()
