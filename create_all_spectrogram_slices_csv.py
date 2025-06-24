@@ -22,7 +22,7 @@ def main():
     parser.add_argument("--output-dir", type=str, default="VOiCES_devkit_spectrograms")
     parser.add_argument("--sr", type=int, default=16000)
     parser.add_argument("--duration", type=float, default=3.0)
-    parser.add_argument("--top-db", type=int, default=20)
+    parser.add_argument("--top-db", type=int, default=15)
     parser.add_argument("--output-csv", type=str, default="all_spectrogram_slices.csv")
     args = parser.parse_args()
 
