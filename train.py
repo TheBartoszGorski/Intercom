@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import transforms
 from sklearn.metrics import precision_score, recall_score, f1_score
 from PIL import Image
@@ -37,21 +37,18 @@ def create_all_spectrograms_classified(path, allowed_men_count, allowed_women_co
 
     return df
 
-def create_balanced_spectrograms_classified(path, allowed_men_count, allowed_women_count):
+def create_balanced_spectrograms_classified(path, allowed_men_count, allowed_women_count, single_gender_amount):
     # Load the dataset
     df = pd.read_csv(path)
-
-    # Filter only files from 'none' noise folder
-    df = df[df['filename'].str.contains('none')].copy()
 
     # Get unique speakers by gender
     female_speakers = df[df['gender'] == 'F']['speaker'].unique()
     male_speakers = df[df['gender'] == 'M']['speaker'].unique()
 
-    # Fix total to 30 speakers: 15 from each gender
+    # Fix total amount of speakers: speaker_amount from each gender
     np.random.seed(42)
-    selected_females = np.random.choice(female_speakers, 25, replace=False)
-    selected_males = np.random.choice(male_speakers, 25, replace=False)
+    selected_females = np.random.choice(female_speakers, single_gender_amount, replace=False)
+    selected_males = np.random.choice(male_speakers, single_gender_amount, replace=False)
 
     selected_speakers = set(selected_females.tolist() + selected_males.tolist())
     df = df[df['speaker'].isin(selected_speakers)].copy()
@@ -86,7 +83,7 @@ def create_noiseless_spectrograms_classified(path, allowed_men_count, allowed_wo
 
     return df
 
-def create_balanced_noiseless_spectrograms_classified(path, allowed_men_count, allowed_women_count):
+def create_balanced_noiseless_spectrograms_classified(path, allowed_men_count, allowed_women_count, single_gender_amount):
     # Load the dataset
     df = pd.read_csv(path)
 
@@ -97,10 +94,10 @@ def create_balanced_noiseless_spectrograms_classified(path, allowed_men_count, a
     female_speakers = df[df['gender'] == 'F']['speaker'].unique()
     male_speakers = df[df['gender'] == 'M']['speaker'].unique()
 
-    # Fix total to 30 speakers: 15 from each gender
+    # Fix total to amount of speakers: speaker_amount from each gender
     np.random.seed(42)
-    selected_females = np.random.choice(female_speakers, 10, replace=False)
-    selected_males = np.random.choice(male_speakers, 10, replace=False)
+    selected_females = np.random.choice(female_speakers, single_gender_amount, replace=False)
+    selected_males = np.random.choice(male_speakers, single_gender_amount, replace=False)
 
     selected_speakers = set(selected_females.tolist() + selected_males.tolist())
     df = df[df['speaker'].isin(selected_speakers)].copy()
@@ -115,44 +112,74 @@ def create_balanced_noiseless_spectrograms_classified(path, allowed_men_count, a
     return df
 
 def generate_dataframes(df):
-    # Get unique transcripts
+    # Shuffle transcripts
     unique_transcripts = df['transcript'].unique()
-
-    # Shuffle and split transcript list into train, validate, test (10:1:1 ratio)
     np.random.shuffle(unique_transcripts)
 
+    # 70% train transcripts
     n_total = len(unique_transcripts)
-    n_validate = n_total // 12
-    n_test = n_validate
-    n_train = n_total - n_validate - n_test
+    n_train = int(n_total * 0.7)
 
     train_transcripts = unique_transcripts[:n_train]
-    validate_transcripts = unique_transcripts[n_train:n_train + n_validate]
-    test_transcripts = unique_transcripts[n_train + n_validate:]
+    remaining_transcripts = unique_transcripts[n_train:]
 
-    # Create subsets based on transcript split
+    # Create train set
     train_df = df[df['transcript'].isin(train_transcripts)].copy()
-    validate_df = df[df['transcript'].isin(validate_transcripts)].copy()
-    test_df = df[df['transcript'].isin(test_transcripts)].copy()
 
-    # Ensure test and validate have at least one entry from each allowed speaker
-    allowed_speakers = df[df['allowed'] == 1]['speaker'].unique()
+    # Create remaining set (to be split into val/test)
+    remaining_df = df[df['transcript'].isin(remaining_transcripts)].copy()
 
-    def ensure_coverage(df_subset):
-        speakers_present = df_subset['speaker'].unique()
-        missing_speakers = set(allowed_speakers) - set(speakers_present)
-        for speaker in missing_speakers:
-            speaker_entries = df[(df['speaker'] == speaker) & (df['transcript'].isin(train_transcripts))]
-            if not speaker_entries.empty:
-                chosen_row = speaker_entries.sample(1, random_state=42)
-                df_subset = pd.concat([df_subset, chosen_row])
-        return df_subset
+    # --- Smart split into val/test ---
+    # Group by transcript so that entire transcript stays in one set
+    grouped = remaining_df.groupby('transcript')
+    transcripts = list(grouped.groups.keys())
+    np.random.seed(42)
+    np.random.shuffle(transcripts)
 
-    # Apply the corrected coverage logic
-    validate_df = ensure_coverage(validate_df)
-    test_df = ensure_coverage(test_df)
+    val_transcripts = []
+    test_transcripts = []
+    val_size = 0
+    test_size = 0
+    half_rows = len(remaining_df) // 2
+
+    for t in transcripts:
+        group_size = len(grouped.get_group(t))
+        if val_size <= test_size:
+            val_transcripts.append(t)
+            val_size += group_size
+        else:
+            test_transcripts.append(t)
+            test_size += group_size
+
+    # Construct final sets
+    validate_df = remaining_df[remaining_df['transcript'].isin(val_transcripts)].copy()
+    test_df = remaining_df[remaining_df['transcript'].isin(test_transcripts)].copy()
+
+    # Optionally reset index
+    train_df.reset_index(drop=True, inplace=True)
+    validate_df.reset_index(drop=True, inplace=True)
+    test_df.reset_index(drop=True, inplace=True)
 
     return train_df, validate_df, test_df
+
+def summarize_class_distribution(train_df, validate_df, test_df):
+    # Count allowed/disallowed in each set
+    train_counts = train_df['allowed'].value_counts().rename({0: 'disallowed_count', 1: 'allowed_count'})
+    val_counts = validate_df['allowed'].value_counts().rename({0: 'disallowed_count', 1: 'allowed_count'})
+    test_counts = test_df['allowed'].value_counts().rename({0: 'disallowed_count', 1: 'allowed_count'})
+
+    # Combine into one table
+    summary = pd.DataFrame({
+        'train_set': train_counts,
+        'validate_set': val_counts,
+        'test_set': test_counts
+    }).fillna(0).astype(int)
+
+    # Reorder rows for readability
+    summary = summary.loc[['allowed_count', 'disallowed_count']]
+
+    print(summary)
+    return
 
 
 class SpectrogramDataset(Dataset):
@@ -178,18 +205,35 @@ class SpectrogramDataset(Dataset):
         return image, label
     
 
-def generate_dataloaders(train_df, validate_df, test_df, batch_size=32, shuffle=True, transform=None):
+def generate_dataloaders(train_df, validate_df, test_df, batch_size=32, transform=None):
     train_dataset = SpectrogramDataset(train_df, transform)
     validate_dataset = SpectrogramDataset(validate_df, transform)
     test_dataset = SpectrogramDataset(test_df, transform)
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle)
-    validate_loader = DataLoader(validate_dataset, batch_size=batch_size, shuffle=False)
+    def create_sampler(df):
+        # Get class counts
+        class_counts = df['allowed'].value_counts().to_dict()
+        # Compute class weights
+        class_weights = {cls: 1.0 / count for cls, count in class_counts.items()}
+        # Assign sample weights
+        sample_weights = df['allowed'].map(class_weights).values
+        sampler = WeightedRandomSampler(
+            weights=torch.DoubleTensor(sample_weights),
+            num_samples=len(sample_weights),
+            replacement=True
+        )
+        return sampler
+
+    train_sampler = create_sampler(train_df)
+    validate_sampler = create_sampler(validate_df)
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler)
+    validate_loader = DataLoader(validate_dataset, batch_size=batch_size, sampler=validate_sampler)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     return train_loader, validate_loader, test_loader
     
-def train_one_epoch(model, loader, criterion, optimizer):
+def train_epoch(model, loader, criterion, optimizer):
     model.train()
     running_loss = 0.0
     correct = 0
@@ -264,15 +308,14 @@ def main():
         description="Preprocess Voices_devkit to spectrograms"
     )
     parser.add_argument('--dataset-csv-dir',   type=Path, default='all_spectrogram_slices.csv')
-    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--learning-rate", type=int, default=1e-4)
-    parser.add_argument("--allowed-men-count", type=int, default=5)
-    parser.add_argument("--allowed-women-count", type=int, default=5)
+    parser.add_argument("--learning-rate", type=int, default=3e-4)
+    parser.add_argument("--allowed-men-count", type=int, default=3)
+    parser.add_argument("--allowed-women-count", type=int, default=3)
     parser.add_argument("--resume", action="store_true", help="Resume training from a saved model.")
-    parser.add_argument("--patience_lim", type=int, default=8)
-    parser.add_argument("--csv-type", type=str, default='balanced')
-    parser.add_argument("--CNN-model", type=str, default='CNN1')
+    parser.add_argument("--csv-type", type=str, default='all')
+    parser.add_argument("--CNN-model", type=str, default='CNN2')
 
     settings = parser.parse_args()
     epochs = settings.epochs
@@ -286,18 +329,21 @@ def main():
     elif csv_type == 'noiseless':
         df = create_noiseless_spectrograms_classified(settings.dataset_csv_dir, settings.allowed_men_count, settings.allowed_women_count)
     elif csv_type == 'balanced':
-        df = create_balanced_spectrograms_classified(settings.dataset_csv_dir, settings.allowed_men_count, settings.allowed_women_count)
+        df = create_balanced_spectrograms_classified(settings.dataset_csv_dir, settings.allowed_men_count, settings.allowed_women_count, 15)
     elif csv_type == "balanced_noiseless":
-        df = create_balanced_noiseless_spectrograms_classified(settings.dataset_csv_dir, settings.allowed_men_count, settings.allowed_women_count)
+        df = create_balanced_noiseless_spectrograms_classified(settings.dataset_csv_dir, settings.allowed_men_count, settings.allowed_women_count, 15)
 
     train_df, validate_df, test_df = generate_dataframes(df)
+
+    summarize_class_distribution(train_df, validate_df, test_df)
+
     transform = transforms.Compose([
         transforms.Resize((256, 256)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5], std=[0.5])
         ])
     # creation of dataloaders
-    train_loader, validate_loader, test_loader = generate_dataloaders(train_df, validate_df, test_df, batch_size=batch_size, shuffle=True, transform = transform)
+    train_loader, validate_loader, test_loader = generate_dataloaders(train_df, validate_df, test_df, batch_size=batch_size, transform = transform)
 
     # creation of the model
     if model_name == 'CNN1':
@@ -316,27 +362,21 @@ def main():
         model.load_state_dict(torch.load(f"{model_name}_model.pth", map_location=device))
 
     best_f1 = 0.0
-    patience_counter = 0
-    patience_limit = settings.patience_lim  # stop if no improvement after 5 epochs
     model.to(device)
     
     for epoch in range(epochs):
         print(f"\nEpoch {epoch+1}/{epochs}")
-        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer,)
+        train_loss, train_acc = train_epoch(model, train_loader, criterion, optimizer)
         validate_loss, validate_acc, val_f1 = evaluate(model, validate_loader, criterion)
 
         # Early stopping check
         if val_f1 > best_f1:
             best_f1 = val_f1
-            patience_counter = 0
             torch.save(model.state_dict(), f"{model_name}_model.pth")
             print("Model improved. Saved.")
         else:
-            patience_counter += 1
-            print(f"No improvement. Early stopping patience: {patience_counter}/{patience_limit}")
-            if patience_counter >= patience_limit:
-                print("Early stopping triggered.")
-                break
+            print(f"No improvement.")
+
 
         print(f"Train Loss: {train_loss:.4f}, Accuracy: {train_acc:.4f}")
         print(f"Val   Loss: {validate_loss:.4f}, Accuracy: {validate_acc:.4f}")
